@@ -1,0 +1,8 @@
+- **Input:** Final codebase + test results
+- **Output:** Trivy vulnerability scan report
+- **Responsibilities:**
+  - Build Docker image of the application
+  - Run Trivy container scanner against the image
+  - Parse and summarize findings (CVEs, severity levels)
+  - Flag critical/high vulnerabilities for remediation
+- **Tools Available:** Docker/Docker Compose, Trivy CLI

@@ -1,0 +1,3 @@
+- **Input:** Implementation plan from Planner
+- **Output:** List of actionable tasks with priorities, dependencies, and estimated complexity
+- **LLM Role:** Break plan into discrete coding/testing tasks

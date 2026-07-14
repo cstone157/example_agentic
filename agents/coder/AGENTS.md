@@ -1,0 +1,8 @@
+- **Input:** Drafted tasks from Tasker
+- **Output:** Source code files for each task
+- **Responsibilities:**
+  - Implement code matching the plan and tasks
+  - Write production-quality Python with type hints
+  - Follow project conventions (PEP 8, docstrings)
+  - Output file paths and code content to state
+- **Tools Available:** File write tool, syntax validation (Pylance)

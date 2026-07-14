@@ -1,0 +1,8 @@
+- **Input:** Generated code files from Coder
+- **Output:** Complete test suite + pytest execution results
+- **Responsibilities:**
+  - Generate unit tests, integration tests, and edge-case coverage
+  - Write tests for all public functions/classes
+  - Execute `pytest` against generated code
+  - Report pass/fail status with error details
+- **Tools Available:** File write tool, test runner tool
