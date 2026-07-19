@@ -1,0 +1,22 @@
+version: '3.8'
+
+services:
+  trivy-scan:
+    image: aquasec/trivy:latest
+    volumes:
+      - ./app-image:/app:ro
+    command: >
+      image
+      --format json
+      --severity CRITICAL,HIGH,MEDIUM
+      --exit-code 0
+      /path/to/app-image
+    environment:
+      - TRIVY_SKIP_DB_UPDATE=true
+      - TRIVY_SKIP_JAVA_DB_UPDATE=true
+    networks:
+      - scan-network
+
+networks:
+  scan-network:
+    driver: bridge
