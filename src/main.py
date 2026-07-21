@@ -265,12 +265,20 @@ def check_auth_credentials(args: argparse.Namespace) -> None:
     - OPENAI_API_KEY environment variable
     - OPENAI_ADMIN_KEY environment variable
 
+    Skips validation when using a custom base URL (local models) since
+    local endpoints often don't require authentication.
+
     Args:
         args: Parsed command-line arguments.
 
     Raises:
         SystemExit: If no valid authentication method is found.
     """
+    # Skip auth check for local models (custom endpoint or --local-model flag)
+    if args.base_url or os.environ.get("OPENAI_BASE_URL") or args.local_model:
+        logger.info("Using local model — skipping credential validation")
+        return
+
     has_credentials = (
         getattr(args, "api_key", None)
         or getattr(args, "workload_identity", None)
