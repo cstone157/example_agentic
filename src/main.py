@@ -10,10 +10,13 @@ the LangGraph multi-agent workflow from planning through deployment.
 
 from __future__ import annotations
 
+import argparse
 import json
 import logging
+import os
 import sys
 from pathlib import Path
+from typing import Any, Optional
 
 # Add project root to path for imports
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -188,22 +191,34 @@ def format_output(result: dict[str, object]) -> str:
     return "\n".join(output)
 
 
-def run_workflow(app_description: str, verbose: bool = False) -> dict[str, object]:
+def run_workflow(app_description: str, verbose: bool = False, log_file: Optional[str] = None) -> dict[str, object]:
     """Run the multi-agent workflow with the given application description.
 
     Args:
         app_description: Description of the application to build.
         verbose: Enable verbose logging output.
+        log_file: Path to write workflow log output. If None, logs to console only.
 
     Returns:
         The final workflow state dictionary.
     """
-    # Configure logging
+    # Configure logging — write to both console and file if specified
     log_level = logging.DEBUG if verbose else logging.INFO
+    log_format = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+    datefmt = "%H:%M:%S"
+
+    handlers: list[logging.Handler] = [logging.StreamHandler(sys.stdout)]
+    if log_file:
+        log_path = Path(log_file)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        handlers.append(logging.FileHandler(log_path, encoding="utf-8"))
+        logger.info("Logging to file: %s", log_path)
+
     logging.basicConfig(
         level=log_level,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        datefmt="%H:%M:%S",
+        format=log_format,
+        datefmt=datefmt,
+        handlers=handlers,
     )
 
     logger.info("Starting workflow with app description: %s", app_description[:100])
@@ -240,13 +255,114 @@ def run_workflow(app_description: str, verbose: bool = False) -> dict[str, objec
         raise
 
 
+def check_auth_credentials(args: argparse.Namespace) -> None:
+    """Validate that authentication credentials are available before starting.
+
+    Checks for any of the following authentication methods:
+    - api_key argument
+    - workload_identity argument
+    - admin_api_key argument
+    - OPENAI_API_KEY environment variable
+    - OPENAI_ADMIN_KEY environment variable
+
+    Args:
+        args: Parsed command-line arguments.
+
+    Raises:
+        SystemExit: If no valid authentication method is found.
+    """
+    has_credentials = (
+        getattr(args, "api_key", None)
+        or getattr(args, "workload_identity", None)
+        or getattr(args, "admin_api_key", None)
+        or os.environ.get("OPENAI_API_KEY")
+        or os.environ.get("OPENAI_ADMIN_KEY")
+    )
+
+    if not has_credentials:
+        print("\nError: No authentication credentials provided.")
+        print("\nPlease provide one of the following:")
+        print("  --api-key <key>              Your API key")
+        print("  --workload-identity <id>     Workload identity identifier")
+        print("  --admin-api-key <key>        Admin API key")
+        print("  export OPENAI_API_KEY=<key>  Set environment variable")
+        print("  export OPENAI_ADMIN_KEY=<key> Set admin environment variable")
+        sys.exit(1)
+
+
 def main() -> None:
     """Main entry point for the CLI."""
+    parser = argparse.ArgumentParser(
+        description="Multi-Agent Development Workflow",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python -m src.main                          # Interactive mode
+  echo "Build a todo app" | python -m src.main  # Piped input
+  python -m src.main --log workflow.log       # Log to file
+  python -m src.main --verbose                # Verbose output
+        """,
+    )
+    parser.add_argument(
+        "-v", "--verbose",
+        action="store_true",
+        help="Enable verbose (DEBUG) logging",
+    )
+    parser.add_argument(
+        "-l", "--log",
+        metavar="FILE",
+        help="Write workflow log to specified file",
+    )
+    parser.add_argument(
+        "-d", "--description",
+        metavar="TEXT",
+        help="Application description (alternative to interactive/piped input)",
+    )
+    parser.add_argument(
+        "--api-key",
+        metavar="KEY",
+        help="API key for authentication",
+    )
+    parser.add_argument(
+        "--workload-identity",
+        metavar="ID",
+        help="Workload identity identifier",
+    )
+    parser.add_argument(
+        "--admin-api-key",
+        metavar="KEY",
+        help="Admin API key for authentication",
+    )
+    parser.add_argument(
+        "--base-url",
+        metavar="URL",
+        help="Custom API endpoint URL (for local models like Ollama, LM Studio)",
+    )
+    parser.add_argument(
+        "--local-model",
+        metavar="MODEL",
+        help="Model name for local inference (e.g., llama3.2, mistral)",
+    )
+
+    args = parser.parse_args()
+
+    # Set environment variables for local model configuration if provided
+    if args.base_url:
+        os.environ["OPENAI_BASE_URL"] = args.base_url
+    if args.local_model:
+        os.environ["OPENAI_MODEL"] = args.local_model
+
+    # Check for authentication credentials before proceeding
+    check_auth_credentials(args)
+
     print_banner()
     print_workflow_summary()
 
     # Get application description
-    app_description = get_app_description()
+    if args.description:
+        app_description = args.description
+    else:
+        app_description = get_app_description()
 
     if not app_description:
         print("\nError: No application description provided.")
@@ -257,7 +373,7 @@ def main() -> None:
 
     # Run the workflow
     try:
-        result = run_workflow(app_description)
+        result = run_workflow(app_description, verbose=args.verbose, log_file=args.log)
 
         # Display results
         output = format_output(result)

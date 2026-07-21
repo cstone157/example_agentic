@@ -91,13 +91,13 @@ def run_planner(state: AppWorkflowState) -> dict[str, Any]:
     if not app_description:
         error_msg = "Planner node received empty app_description"
         logger.error(error_msg)
-        return {"errors": [error_msg], "status": "failed"}
+        raise RuntimeError(error_msg)
 
     agent_config = _get_agent_config_path("planner")
     if not agent_config.exists():
         error_msg = f"Planner config not found: {agent_config}"
         logger.error(error_msg)
-        return {"errors": [error_msg], "status": "failed"}
+        raise RuntimeError(error_msg)
 
     try:
         # Call the planner agent via LLM client
@@ -118,7 +118,7 @@ def run_planner(state: AppWorkflowState) -> dict[str, Any]:
     except Exception as exc:
         error_msg = f"Planner node failed: {exc}"
         logger.exception(error_msg)
-        return {"errors": [error_msg], "status": "failed"}
+        raise RuntimeError(error_msg) from exc
 
 
 # ── Tasker Node ──────────────────────────────────────────────────────
@@ -134,6 +134,9 @@ def run_tasker(state: AppWorkflowState) -> dict[str, Any]:
 
     Returns:
         State update dict with tasks list and status transition to "coding".
+
+    Raises:
+        RuntimeError: If required input is missing or the LLM call fails.
     """
     logger.info("Tasker node: drafting tasks from implementation plan")
 
@@ -141,13 +144,13 @@ def run_tasker(state: AppWorkflowState) -> dict[str, Any]:
     if not implementation_plan:
         error_msg = "Tasker node received empty implementation_plan"
         logger.error(error_msg)
-        return {"errors": [error_msg], "status": "failed"}
+        raise RuntimeError(error_msg)
 
     agent_config = _get_agent_config_path("tasker")
     if not agent_config.exists():
         error_msg = f"Tasker config not found: {agent_config}"
         logger.error(error_msg)
-        return {"errors": [error_msg], "status": "failed"}
+        raise RuntimeError(error_msg)
 
     try:
         # Build input context for tasker
@@ -178,15 +181,20 @@ def run_tasker(state: AppWorkflowState) -> dict[str, Any]:
             except json.JSONDecodeError:
                 tasks = [{"id": "task-001", "description": tasks, "priority": "P0", "dependencies": [], "complexity": "M", "status": "pending"}]
 
+        if not isinstance(tasks, list) or len(tasks) == 0:
+            error_msg = "Tasker node returned empty tasks list"
+            logger.error(error_msg)
+            raise RuntimeError(error_msg)
+
         return {
-            "tasks": tasks if isinstance(tasks, list) else [tasks],
+            "tasks": tasks,
             "status": "coding",
         }
 
     except Exception as exc:
         error_msg = f"Tasker node failed: {exc}"
         logger.exception(error_msg)
-        return {"errors": [error_msg], "status": "failed"}
+        raise RuntimeError(error_msg) from exc
 
 
 # ── Coder Node ───────────────────────────────────────────────────────
@@ -209,13 +217,13 @@ def run_coder(state: AppWorkflowState) -> dict[str, Any]:
     if not tasks:
         error_msg = "Coder node received empty tasks list"
         logger.error(error_msg)
-        return {"errors": [error_msg], "status": "failed"}
+        raise RuntimeError(error_msg)
 
     agent_config = _get_agent_config_path("coder")
     if not agent_config.exists():
         error_msg = f"Coder config not found: {agent_config}"
         logger.error(error_msg)
-        return {"errors": [error_msg], "status": "failed"}
+        raise RuntimeError(error_msg)
 
     try:
         # Build input context for coder
@@ -249,6 +257,11 @@ def run_coder(state: AppWorkflowState) -> dict[str, Any]:
         # Write files to disk using file_ops tool
         code_files_written = _write_generated_code(generated_code)
 
+        if not code_files_written:
+            error_msg = "Coder node wrote zero files"
+            logger.error(error_msg)
+            raise RuntimeError(error_msg)
+
         return {
             "generated_code": generated_code,
             "code_files_written": [str(p) for p in code_files_written],
@@ -258,7 +271,7 @@ def run_coder(state: AppWorkflowState) -> dict[str, Any]:
     except Exception as exc:
         error_msg = f"Coder node failed: {exc}"
         logger.exception(error_msg)
-        return {"errors": [error_msg], "status": "failed"}
+        raise RuntimeError(error_msg) from exc
 
 
 def _write_generated_code(generated_code: dict[str, str]) -> list[Path]:
@@ -302,13 +315,13 @@ def run_tester(state: AppWorkflowState) -> dict[str, Any]:
     if not code_files and not generated_code:
         error_msg = "Tester node received no code files to test"
         logger.error(error_msg)
-        return {"errors": [error_msg], "status": "failed"}
+        raise RuntimeError(error_msg)
 
     agent_config = _get_agent_config_path("tester")
     if not agent_config.exists():
         error_msg = f"Tester config not found: {agent_config}"
         logger.error(error_msg)
-        return {"errors": [error_msg], "status": "failed"}
+        raise RuntimeError(error_msg)
 
     try:
         # Build input context for tester
@@ -351,7 +364,7 @@ def run_tester(state: AppWorkflowState) -> dict[str, Any]:
     except Exception as exc:
         error_msg = f"Tester node failed: {exc}"
         logger.exception(error_msg)
-        return {"errors": [error_msg], "status": "failed"}
+        raise RuntimeError(error_msg) from exc
 
 
 def _write_test_suite(test_suite: dict[str, str]) -> list[Path]:
@@ -439,7 +452,7 @@ def run_security_scanner(state: AppWorkflowState) -> dict[str, Any]:
     if not agent_config.exists():
         error_msg = f"Security config not found: {agent_config}"
         logger.error(error_msg)
-        return {"errors": [error_msg], "status": "failed"}
+        raise RuntimeError(error_msg)
 
     try:
         # Check if Docker is available
@@ -465,7 +478,7 @@ def run_security_scanner(state: AppWorkflowState) -> dict[str, Any]:
     except Exception as exc:
         error_msg = f"Security node failed: {exc}"
         logger.exception(error_msg)
-        return {"errors": [error_msg], "status": "failed"}
+        raise RuntimeError(error_msg) from exc
 
 
 def _check_docker_available() -> bool:

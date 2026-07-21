@@ -95,11 +95,20 @@ class BaseLLMClient:
 class OpenAIClient(BaseLLMClient):
     """OpenAI LLM client using langchain-openai.
 
-    Supports all OpenAI chat models (gpt-4o, gpt-4-turbo, etc.).
+    Supports all OpenAI chat models (gpt-4o, gpt-4-turbo, etc.) as well as
+    any OpenAI-compatible API endpoint for local models (Ollama, LM Studio,
+    vLLM, text-generation-inference, etc.).
+
     Configuration via environment variables:
-        OPENAI_API_KEY  — Required API key
-        OPENAI_MODEL    — Model name (default: gpt-4o)
-        OPENAI_TEMP     — Temperature (default: 0.0)
+        OPENAI_API_KEY     — Required API key (or "local" for no auth)
+        OPENAI_MODEL       — Model name (default: gpt-4o)
+        OPENAI_TEMP        — Temperature (default: 0.0)
+        OPENAI_BASE_URL    — Custom API endpoint URL (for local models)
+
+    For local models, set OPENAI_BASE_URL to your endpoint and use a dummy key:
+        export OPENAI_BASE_URL=http://localhost:11434/v1
+        export OPENAI_API_KEY=local
+        export OPENAI_MODEL=llama3.2
     """
 
     provider_name = "openai"
@@ -107,10 +116,14 @@ class OpenAIClient(BaseLLMClient):
     def __init__(self, model: Optional[str] = None, temperature: Optional[float] = None, **kwargs: Any) -> None:
         self.model = model or os.getenv("OPENAI_MODEL", "gpt-4o")
         self.temperature = temperature if temperature is not None else float(os.getenv("OPENAI_TEMP", "0.0"))
-        self.api_key = os.getenv("OPENAI_API_KEY")
+        self.api_key = os.getenv("OPENAI_API_KEY", "local")
+        self.base_url = os.getenv("OPENAI_BASE_URL")
         self.extra_kwargs = kwargs
 
-        logger.info("Initializing OpenAIClient(model=%s, temp=%.1f)", self.model, self.temperature)
+        logger.info(
+            "Initializing OpenAIClient(model=%s, temp=%.1f, base_url=%s)",
+            self.model, self.temperature, self.base_url,
+        )
         self._llm: Optional[ChatOpenAI] = None
 
     @property
@@ -120,9 +133,10 @@ class OpenAIClient(BaseLLMClient):
             init_kwargs: dict[str, Any] = {
                 "model": self.model,
                 "temperature": self.temperature,
+                "api_key": self.api_key,
             }
-            if self.api_key:
-                init_kwargs["api_key"] = self.api_key
+            if self.base_url:
+                init_kwargs["base_url"] = self.base_url
             init_kwargs.update(self.extra_kwargs)
             self._llm = ChatOpenAI(**init_kwargs)
         return self._llm
