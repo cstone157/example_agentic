@@ -1,479 +1,575 @@
-# ML Workflow Plan: LangChain/LangGraph Application Pipeline
+# Plan: LangChain/LangGraph with Local Model on NVIDIA DGX
 
 ## Overview
 
-A multi-agent workflow built with **LangGraph** that takes an application description and orchestrates a complete development lifecycle — from planning through deployment — using specialized agents at each stage.
+This plan describes how to adapt the multi-agent workflow (from `PLAN.md`) to use **locally-hosted LLMs** on an **NVIDIA DGX** system instead of cloud APIs (OpenAI, etc.). The DGX provides the GPU compute needed for high-throughput inference across multiple agents running in parallel.
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                     APPLICATION WORKFLOW                           │
-│                                                                     │
-│  ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐    │
-│  │ Ingest   │───▶│ Plan     │───▶│ Draft    │───▶│ Implement│    │
-│  │ App Desc │    │ Agent    │    │ Tasks    │    │ Agent    │    │
-│  └──────────┘    └──────────┘    └──────────┘    └──────────┘    │
-│       │                                              │              │
-│       │                                              ▼              │
-│  ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐    │
-│  │ Deploy   │◀───│ Test     │◀───│ Review   │◀───│ Code     │    │
-│  │ Trivy    │    │ Suite    │    │ & Fix    │    │ Generate │    │
-│  │ Scanner  │    │ Generator│    │ Agent    │    │ Agent    │    │
-│  └──────────┘    └──────────┘    └──────────┘    └──────────┘    │
-│                                                                     │
-│                    LangGraph State Machine                         │
-└─────────────────────────────────────────────────────────────────────┘
-```
-
----
-
-## Phase 1: Project Structure
-
-```
-example_agentic/
-├── agents/
-│   ├── planner/
-│   │   └── AGENTS.md          # Existing — turn app desc into implementation plan
-│   ├── tasker/
-│   │   └── AGENTS.md          # Existing — draft tasks from plan
-│   ├── coder/
-│   │   └── AGENTS.md          # NEW — implement tasks, write code
-│   ├── tester/
-│   │   └── AGENTS.md          # NEW — generate test suite for all code
-│   └── security/
-│       └── AGENTS.md          # NEW — configure & run Trivy scan
-├── src/
-│   ├── workflow/
-│   │   ├── __init__.py
-│   │   ├── state.py           # LangGraph State definition
-│   │   ├── graph.py           # LangGraph compiled graph
-│   │   ├── nodes.py           # Node implementations (agent calls)
-│   │   └── prompts.py         # System prompts for each agent
-│   ├── agents/
-│   │   ├── base.py            # Shared agent factory & LLM client
-│   │   └── llm_client.py      # OpenAI / LLM abstraction layer
-│   └── tools/
-│       ├── file_ops.py        # Read/write code files safely
-│       ├── test_runner.py     # pytest execution tool
-│       └── trivy_scanner.py   # Trivy Docker scan tool
-├── tests/
-│   └── test_workflow.py       # Tests for the workflow itself
-├── docker-compose.yml         # Trivy scanner service
-├── Dockerfile                 # App container (for Trivy to scan)
-├── requirements.txt           # Existing dependencies
-├── pyproject.toml             # Project metadata
-└── README.md                  # Workflow documentation
+┌──────────────────────────────────────────────────────────────────────┐
+│                    NVIDIA DGX INFRASTRUCTURE                         │
+│                                                                      │
+│  ┌──────────────────────────────────────────────────────────────┐   │
+│  │              Local LLM Inference Server                       │   │
+│  │                                                              │   │
+│  │  ┌─────────────┐  ┌─────────────┐  ┌────────────────────┐  │   │
+│  │  │ vLLM /       │  │ Ollama /     │  │ TGI (Text          │  │   │
+│  │  │ TensorRT-LLM │  │ LM Studio    │  │ Generation         │  │   │
+│  │  │              │  │              │  │ Server)            │  │   │
+│  │  └──────┬──────┘  └──────┬──────┘  └────────┬───────────┘  │   │
+│  │         └────────────────┼──────────────────┘              │   │
+│  │                          │ HTTP / REST                       │   │
+│  │                     (localhost:8000)                         │   │
+│  └─────────────────────────┼──────────────────────────────────┘   │
+│                            │                                       │
+│  ┌─────────────────────────▼──────────────────────────────────┐   │
+│  │              LangChain / LangGraph Pipeline                 │   │
+│  │                                                              │   │
+│  │  ┌────────┐  ┌────────┐  ┌────────┐  ┌────────┐           │   │
+│  │  │Planner │→  │Tasker  │→  │Coder   │→  │Tester   │          │   │
+│  │  └────────┘  └────────┘  └────────┘  └────────┘           │   │
+│  │       ▲                                     │               │   │
+│  │       └─────── (loop on failure) ───────────┘               │   │
+│  │                                                              │   │
+│  │  LangChain ChatModel → local OpenAI-compatible endpoint     │   │
+│  └──────────────────────────────────────────────────────────────┘   │
+│                                                                      │
+│              spark-dgx (NVIDIA DGX Server)                           │
+└──────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## Phase 2: LangGraph State Definition
+## Phase 1: Local Model Selection & Preparation
 
-### `src/workflow/state.py`
+### 1.1 Model Candidates for Code Generation
 
-Define a shared state schema that flows through every node:
+| Model | Parameters | License | Strengths | GPU Memory Required |
+|-------|-----------|---------|-----------|---------------------|
+| **Codestral** | 22B | Mistral Community | Excellent code generation, multilingual | ~14 GB (FP16) |
+| **DeepSeek Coder V2** | 236B (MoE) | Apache 2.0 | State-of-the-art coding | ~48 GB (INT4) / ~96 GB (FP16) |
+| **Qwen 2.5 Coder** | 32B | Apache 2.0 | Strong Python/code, fast inference | ~20 GB (FP16) |
+| **Llama 3.1** | 70B | Meta License | General-purpose, strong reasoning | ~140 GB (FP16) / ~40 GB (INT4) |
+| **Mistral Large** | 123B | Custom | Strong planning & architecture | ~240 GB (FP16) |
+
+### 1.2 Recommended Stack for spark-dgx
+
+```
+Primary Model:  Qwen 2.5 Coder 32B  (best balance of quality/speed/memory)
+Fallback Model: Codestral 22B       (faster, lighter tasks)
+Reasoning:      Llama 3.1 70B       (complex planning/architecture tasks)
+```
+
+The DGX typically has 8× A100/H100 GPUs — this is sufficient to run multiple models simultaneously or use tensor parallelism for larger models.
+
+### 1.3 Model Download & Quantization
+
+```bash
+# Using Hugging Face CLI
+pip install huggingface_hub
+huggingface-cli download Qwen/Qwen2.5-Coder-32B-Instruct --local-dir ./models/qwen-coder-32b
+
+# Quantize with bitsandbytes (INT4) for reduced memory footprint
+# or use GGUF format with llama.cpp / Ollama
+pip install optimum[neural-compressor]
+```
+
+---
+
+## Phase 2: Inference Server Setup on spark-dgx
+
+### 2.1 Option A — vLLM (Recommended for throughput)
+
+vLLM provides PagedAttention, continuous batching, and tensor parallelism — ideal for serving multiple agents concurrently.
+
+```dockerfile
+# Dockerfile for vLLM inference server
+FROM vllm/vllm-runtime:latest
+
+ENV VLLM_HOST_IP=0.0.0.0
+ENV PORT=8000
+
+COPY models/ /data/models/
+```
+
+```bash
+# Launch vLLM with tensor parallelism across DGX GPUs
+docker run --gpus all \
+  -p 8000:8000 \
+  -v ./models:/data/models \
+  vllm/vllm-runtime:latest \
+  --model /data/models/qwen-coder-32b \
+  --tensor-parallel-size 4 \
+  --max-model-len 16384 \
+  --host 0.0.0.0 \
+  --port 8000
+```
+
+### 2.2 Option B — Ollama (Simpler, single-model)
+
+```bash
+# Install Ollama on spark-dgx
+curl -fsSL https://ollama.com/install.sh | sh
+
+# Pull and serve the model
+ollama pull qwen2.5-coder:32b
+ollama serve --host 0.0.0.0
+
+# Model runs at http://spark-dgx:11434
+```
+
+### 2.3 Option C — NVIDIA TGI (Text Generation Inference)
+
+```bash
+# Using NVIDIA's TGI container
+docker run --gpus all \
+  -p 8080:80 \
+  -v ./models:/data/models \
+  ghcr.io/huggingface/text-generation-inference:latest \
+  --model-id Qwen/Qwen2.5-Coder-32B-Instruct \
+  --sharded true \
+  --num-shard 4 \
+  --max-batch-total-tokens 65536
+```
+
+### 2.4 Inference Server Comparison
+
+| Feature | vLLM | Ollama | TGI |
+|---------|------|--------|-----|
+| Multi-GPU tensor parallelism | ✅ | ❌ | ✅ |
+| OpenAI-compatible API | ✅ | ✅ | ❌ (native) |
+| Continuous batching | ✅ | ❌ | ✅ |
+| Easy setup | Medium | Easiest | Hard |
+| Throughput | Highest | Moderate | High |
+| Model variety | Broad | Good | HuggingFace only |
+
+**Recommendation: vLLM** for the DGX — it maximizes GPU utilization and provides an OpenAI-compatible API that LangChain uses natively.
+
+---
+
+## Phase 3: LangChain Integration with Local Model
+
+### 3.1 Dependencies (`requirements.txt`)
+
+```txt
+langchain>=0.3.0
+langchain-openai>=0.2.0          # Reused for local OpenAI-compatible endpoints
+langgraph>=0.2.0
+vllm                             # Optional: direct vLLM client
+transformers>=4.44.0             # For model loading if not using server
+torch>=2.4.0                     # PyTorch backend
+accelerate>=0.34.0               # Model loading utilities
+```
+
+### 3.2 Local LLM Client (`src/agents/llm_client.py`)
 
 ```python
-from typing import TypedDict, NotRequired
-from langgraph.graph import MessagesState
+from langchain_openai import ChatOpenAI
+from langchain_core.messages import HumanMessage, SystemMessage
+from typing import Optional
 
-class AppWorkflowState(MessagesState):
-    # Input
-    app_description: str                          # User's application description
-    
-    # Planner output
-    implementation_plan: str                      # Structured plan from planner agent
-    user_stories: list[str]                       # Extracted user stories
-    tech_stack: dict[str, str]                    # Recommended frameworks/libraries
-    
-    # Tasker output
-    tasks: list[dict[str, str]]                   # [{id, description, priority, status}]
-    
-    # Coder output
-    generated_code: dict[str, str]                # {filepath: code_content}
-    code_files_written: list[str]                 # Paths written to disk
-    
-    # Tester output
-    test_suite: dict[str, str]                    # {test_filepath: test_content}
-    test_results: dict[str, any]                  # pytest results summary
-    tests_passed: bool                            # All tests green?
-    
-    # Security output
-    trivy_report: dict[str, any]                  # Trivy scan results
-    vulnerabilities_found: list[dict[str, str]]   # List of CVEs/issues
-    security_passed: bool                         # No critical/high vulns?
-    
-    # Control flow
-    status: str                                   # "planning" | "drafting" | "coding" | "testing" | "securing" | "complete" | "failed"
-    errors: list[str]                             # Accumulated error log
+
+class LocalLLMClient:
+    """LangChain-compatible client for local models on spark-dgx."""
+
+    def __init__(
+        self,
+        model_name: str = "Qwen/Qwen2.5-Coder-32B-Instruct",
+        base_url: str = "http://spark-dgx:8000/v1",  # vLLM OpenAI endpoint
+        api_key: str = "sk-no-key-required",           # vLLM requires this placeholder
+        temperature: float = 0.2,                      # Low temp for code generation
+        max_tokens: int = 4096,
+        timeout: int = 120,
+    ):
+        self.llm = ChatOpenAI(
+            model=model_name,
+            openai_api_key=api_key,
+            openai_api_base=base_url,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            timeout=timeout,
+        )
+
+    def invoke(self, messages: list) -> str:
+        """Send messages and return the model's response."""
+        response = self.llm.invoke(messages)
+        return response.content
+
+    def invoke_with_stream(self, messages: list):
+        """Stream responses for real-time feedback."""
+        return self.llm.stream(messages)
+
+
+# Factory for different agent roles with tuned parameters
+def create_planner_client() -> LocalLLMClient:
+    """Planner needs high reasoning — use higher temperature."""
+    return LocalLLMClient(temperature=0.4, max_tokens=8192)
+
+
+def create_coder_client() -> LocalLLMClient:
+    """Coder needs precision — low temperature."""
+    return LocalLLMClient(temperature=0.1, max_tokens=4096)
+
+
+def create_tester_client() -> LocalLLMClient:
+    """Tester needs analytical thinking."""
+    return LocalLLMClient(temperature=0.2, max_tokens=4096)
+```
+
+### 3.3 Node Implementation with Local LLM (`src/workflow/nodes.py`)
+
+```python
+from src.workflow.state import AppWorkflowState
+from src.agents.llm_client import create_planner_client, create_coder_client, create_tester_client
+
+
+def run_planner(state: AppWorkflowState) -> dict:
+    """Call planner agent using local model on spark-dgx."""
+    client = create_planner_client()
+
+    messages = [
+        SystemMessage(content="You are a senior software architect. Analyze the application description and produce a structured implementation plan."),
+        HumanMessage(content=state["app_description"]),
+    ]
+
+    response = client.invoke(messages)
+    # Parse response into plan, stories, tech_stack (use regex/JSON parsing)
+    parsed = parse_planner_response(response)
+
+    return {
+        "implementation_plan": parsed["plan"],
+        "user_stories": parsed["stories"],
+        "tech_stack": parsed["tech_stack"],
+        "status": "drafting",
+    }
+
+
+def run_coder(state: AppWorkflowState) -> dict:
+    """Call coder agent using local model on spark-dgx."""
+    client = create_coder_client()
+
+    messages = [
+        SystemMessage(content="You are a senior Python developer. Write production-quality code."),
+        HumanMessage(content=f"Tasks:\n{state['tasks']}\n\nPlan context:\n{state['implementation_plan']}"),
+    ]
+
+    response = client.invoke(messages)
+    parsed = parse_coder_response(response)  # Extract {filepath: code}
+
+    written = write_files(parsed["files"])
+    return {
+        "generated_code": parsed["files"],
+        "code_files_written": written,
+        "status": "testing",
+    }
+
+
+# ... tester and security nodes follow the same pattern
 ```
 
 ---
 
-## Phase 3: Agent Definitions
+## Phase 4: LangGraph State Machine (Unchanged from PLAN.md)
 
-### 3.1 Planner Agent (Existing — extend)
-
-**File:** `agents/planner/AGENTS.md`
-
-- **Input:** Raw application description
-- **Output:** Implementation plan with user stories, tech stack recommendations, architecture overview
-- **LLM Role:** Analyze requirements and produce structured MVP plan
-
-### 3.2 Tasker Agent (Existing — extend)
-
-**File:** `agents/tasker/AGENTS.md`
-
-- **Input:** Implementation plan from Planner
-- **Output:** List of actionable tasks with priorities, dependencies, and estimated complexity
-- **LLM Role:** Break plan into discrete coding/testing tasks
-
-### 3.3 Coder Agent (NEW)
-
-**File:** `agents/coder/AGENTS.md`
-
-- **Input:** Drafted tasks from Tasker
-- **Output:** Source code files for each task
-- **Responsibilities:**
-  - Implement code matching the plan and tasks
-  - Write production-quality Python with type hints
-  - Follow project conventions (PEP 8, docstrings)
-  - Output file paths and code content to state
-- **Tools Available:** File write tool, syntax validation (Pylance)
-
-### 3.4 Tester Agent (NEW)
-
-**File:** `agents/tester/AGENTS.md`
-
-- **Input:** Generated code files from Coder
-- **Output:** Complete test suite + pytest execution results
-- **Responsibilities:**
-  - Generate unit tests, integration tests, and edge-case coverage
-  - Write tests for all public functions/classes
-  - Execute `pytest` against generated code
-  - Report pass/fail status with error details
-- **Tools Available:** File write tool, test runner tool
-
-### 3.5 Security Agent (NEW)
-
-**File:** `agents/security/AGENTS.md`
-
-- **Input:** Final codebase + test results
-- **Output:** Trivy vulnerability scan report
-- **Responsibilities:**
-  - Build Docker image of the application
-  - Run Trivy container scanner against the image
-  - Parse and summarize findings (CVEs, severity levels)
-  - Flag critical/high vulnerabilities for remediation
-- **Tools Available:** Docker/Docker Compose, Trivy CLI
-
----
-
-## Phase 4: LangGraph Workflow Graph
-
-### `src/workflow/graph.py` — Node Definitions & Edges
+The LangGraph state definition (`state.py`) and graph compilation (`graph.py`) remain **identical** to `PLAN.md`. The only change is that each node now calls `LocalLLMClient` instead of an OpenAI API.
 
 ```python
+# graph.py — same structure, different node implementations
 from langgraph.graph import StateGraph, START, END
 from src.workflow.state import AppWorkflowState
-from src.workflow.nodes import (
-    run_planner,
-    run_tasker,
-    run_coder,
-    run_tester,
-    run_security_scanner,
-)
+from src.workflow.nodes import run_planner, run_tasker, run_coder, run_tester, run_security_scanner
 
-# Build the graph
 workflow = StateGraph(AppWorkflowState)
-
-# Add nodes
 workflow.add_node("planner", run_planner)
 workflow.add_node("tasker", run_tasker)
 workflow.add_node("coder", run_coder)
 workflow.add_node("tester", run_tester)
 workflow.add_node("security", run_security_scanner)
 
-# Define edges (linear with conditional branches)
 workflow.add_edge(START, "planner")
 workflow.add_edge("planner", "tasker")
 workflow.add_edge("tasker", "coder")
 workflow.add_edge("coder", "tester")
-
-# Conditional: if tests fail → loop back to coder for fixes
 workflow.add_conditional_edges(
     "tester",
-    should_fix_code,       # returns "coder" or "security"
-    {"coder": "coder", "security": "security"}
+    should_fix_code,
+    {"coder": "coder", "security": "security"},
 )
-
 workflow.add_edge("security", END)
 
-# Compile the graph
 app_graph = workflow.compile()
 ```
 
-### Conditional Edge Logic
-
-```python
-def should_fix_code(state: AppWorkflowState) -> str:
-    if not state.get("tests_passed", False):
-        return "coder"  # Loop back to coder with test failure details
-    return "security"   # Proceed to Trivy scan
-```
-
 ---
 
-## Phase 5: Node Implementations
+## Phase 5: spark-dgx Infrastructure Setup
 
-### `src/workflow/nodes.py`
+### 5.1 DGX Configuration Checklist
 
-Each node is a function that:
-1. Receives the current state
-2. Calls the appropriate agent (LLM prompt + tool execution)
-3. Updates state with results
+```bash
+# 1. Verify GPU availability and memory
+nvidia-smi
 
-```python
-# Pseudocode for each node:
+# 2. Check CUDA version
+nvcc --version
 
-def run_planner(state: AppWorkflowState) -> dict:
-    """Call planner agent to generate implementation plan."""
-    plan = call_llm_agent(
-        agent_config="agents/planner/AGENTS.md",
-        input=state["app_description"]
-    )
-    return {
-        "implementation_plan": plan.plan,
-        "user_stories": plan.stories,
-        "tech_stack": plan.tech_stack,
-        "status": "drafting"
-    }
+# 3. Install Docker with GPU support
+sudo apt install docker.io
+sudo usermod -aG docker $USER
+newgrp docker
 
-def run_tasker(state: AppWorkflowState) -> dict:
-    """Call tasker agent to draft tasks from plan."""
-    tasks = call_llm_agent(
-        agent_config="agents/tasker/AGENTS.md",
-        input=state["implementation_plan"]
-    )
-    return {
-        "tasks": tasks.list,
-        "status": "coding"
-    }
+# 4. Install NVIDIA Container Toolkit (for GPU-in-Docker)
+curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
+sudo apt update && sudo apt install -y nvidia-container-toolkit
+sudo nvidia-ctk runtime configure --runtime=docker
 
-def run_coder(state: AppWorkflowState) -> dict:
-    """Call coder agent to implement tasks."""
-    code = call_llm_agent(
-        agent_config="agents/coder/AGENTS.md",
-        input=state["tasks"]
-    )
-    # Write files to disk
-    written = write_files(code.files)
-    return {
-        "generated_code": code.files,
-        "code_files_written": written,
-        "status": "testing"
-    }
+# 5. Restart Docker
+sudo systemctl restart docker
 
-def run_tester(state: AppWorkflowState) -> dict:
-    """Generate and execute test suite."""
-    tests = call_llm_agent(
-        agent_config="agents/tester/AGENTS.md",
-        input=state["generated_code"]
-    )
-    # Write test files
-    write_files(tests.suite)
-    # Run pytest
-    results = run_pytest(state["code_files_written"])
-    return {
-        "test_suite": tests.suite,
-        "test_results": results.summary,
-        "tests_passed": results.all_passed,
-        "status": "securing" if results.all_passed else "coding"
-    }
-
-def run_security_scanner(state: AppWorkflowState) -> dict:
-    """Deploy Trivy and scan the application."""
-    # Build Docker image
-    build_docker_image()
-    # Run Trivy scan
-    report = run_trivy_scan()
-    return {
-        "trivy_report": report,
-        "vulnerabilities_found": report.vulnerabilities,
-        "security_passed": not report.critical_high_vulns,
-        "status": "complete"
-    }
+# 6. Verify GPU access in containers
+docker run --rm --gpus all nvidia/cuda:12.2.0-base-ubuntu22.04 nvidia-smi
 ```
 
----
+### 5.2 Environment Variables (`.env`)
 
-## Phase 6: Trivy Docker Deployment
+```bash
+# spark-dgx inference server
+VLLM_BASE_URL=http://spark-dgx:8000/v1
+VLLM_MODEL=Qwen/Qwen2.5-Coder-32B-Instruct
+VLLM_API_KEY=sk-no-key-required
 
-### `docker-compose.yml` — Trivy Scanner Service
+# Alternative: Ollama endpoint
+OLLAMA_BASE_URL=http://spark-dgx:11434/v1
+
+# Model tuning
+MODEL_TEMPERATURE=0.2
+MODEL_MAX_TOKENS=4096
+MODEL_TIMEOUT=120
+
+# Workflow control
+MAX_CODING_LOOPS=5          # Prevent infinite coder↔tester loops
+TEST_FAILURE_THRESHOLD=3    # Max test retry attempts before failing
+```
+
+### 5.3 Docker Compose for Full Pipeline
 
 ```yaml
 version: '3.8'
 
 services:
+  inference-server:
+    image: vllm/vllm-runtime:latest
+    container_name: spark-dgx-inference
+    runtime: nvidia
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./models:/data/models:ro
+    command: >
+      --model /data/models/qwen-coder-32b
+      --tensor-parallel-size 4
+      --max-model-len 16384
+      --host 0.0.0.0
+      --port 8000
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 4
+              capabilities: [gpu]
+    restart: unless-stopped
+
+  workflow-runner:
+    build: .
+    container_name: agentic-workflow
+    depends_on:
+      - inference-server
+    environment:
+      - VLLM_BASE_URL=http://inference-server:8000/v1
+      - MODEL_TEMPERATURE=0.2
+      - MAX_CODING_LOOPS=5
+    volumes:
+      - ./output:/app/output   # Generated code output
+    restart: "no"
+
   trivy-scan:
     image: aquasec/trivy:latest
+    container_name: trivy-scanner
     volumes:
-      - ./app-image:/app:ro
+      - ./output:/app:ro
     command: >
       image
       --format json
       --severity CRITICAL,HIGH,MEDIUM
       --exit-code 0
-      /path/to/app-image
-    environment:
-      - TRIVY_SKIP_DB_UPDATE=true
-      - TRIVY_SKIP_JAVA_DB_UPDATE=true
-    networks:
-      - scan-network
-
-networks:
-  scan-network:
-    driver: bridge
-```
-
-### `Dockerfile` — Application Image (for Trivy to scan)
-
-```dockerfile
-FROM python:3.12-slim
-
-WORKDIR /app
-
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-COPY src/ ./src/
-COPY agents/ ./agents/
-
-EXPOSE 8000
-
-CMD ["python", "-m", "src.workflow.graph"]
-```
-
-### `src/tools/trivy_scanner.py` — Trivy CLI Wrapper
-
-```python
-import subprocess
-import json
-from pathlib import Path
-
-def run_trivy_scan(image_name: str = "app-image:latest") -> dict:
-    """Run Trivy container scan and return structured results."""
-    result = subprocess.run(
-        ["trivy", "image", "--format", "json", image_name],
-        capture_output=True, text=True
-    )
-    report = json.loads(result.stdout)
-    return {
-        "vulnerabilities": extract_vulns(report),
-        "severity_counts": count_by_severity(report),
-        "exit_code": result.returncode
-    }
-
-def extract_vulns(report: dict) -> list[dict]:
-    """Extract vulnerability details from Trivy report."""
-    vulns = []
-    for layer in report.get("Results", []):
-        for v in layer.get("Vulnerabilities", []):
-            vulns.append({
-                "id": v.get("VulnerabilityID"),
-                "severity": v.get("Severity"),
-                "package": v.get("PkgName"),
-                "installed_version": v.get("InstalledVersion"),
-                "fixed_version": v.get("FixedVersion")
-            })
-    return vulns
+      /app
 ```
 
 ---
 
-## Phase 7: Entry Point & Usage
+## Phase 6: Performance Optimization on DGX
 
-### `src/main.py` — CLI Entry Point
+### 6.1 Tensor Parallelism Strategy
+
+```
+DGX with 8× A100 (80GB each):
+├── Model partitioned across 4 GPUs (tensor_parallel_size=4)
+├── Remaining 4 GPUs available for:
+│   ├── Secondary model (Codestral 22B on 1 GPU)
+│   ├── Batch inference queue
+│   └── Future expansion
+```
+
+### 6.2 Quantization Options
+
+| Format | Tool | Quality Impact | Memory Savings |
+|--------|------|---------------|----------------|
+| INT4 | bitsandbytes / GPTQ | Minimal for coding | ~75% |
+| INT8 | AWQ | Negligible | ~50% |
+| FP8 | NVIDIA TensorRT-LLM | Very small | ~50% |
+| GGUF (Q4_K_M) | llama.cpp | Small | ~65% |
+
+```bash
+# Quantize with GPTQ using auto-gptq
+pip install auto-gptq transformers
+python quantize.py \
+  --model_id Qwen/Qwen2.5-Coder-32B-Instruct \
+  --bits 4 \
+  --group_size 128 \
+  --output_dir ./models/qwen-coder-32b-int4
+```
+
+### 6.3 Throughput Tuning
 
 ```python
-import json
+# vLLM performance knobs
+config = {
+    "tensor_parallel_size": 4,       # GPUs for model
+    "max_model_len": 16384,          # Context window
+    "max_num_batched_tokens": 32768, # Tokens per batch
+    "gpu_memory_utilization": 0.95,  # GPU VRAM usage target
+    "swap_space": 16,                # CPU swap (GB) for overflow
+    "enable_chunked_cache": True,    # Improve throughput for long prompts
+}
+```
+
+---
+
+## Phase 7: Testing & Validation
+
+### 7.1 Local Model Health Check
+
+```python
+# tests/test_local_llm.py
+import pytest
+from src.agents.llm_client import LocalLLMClient
+
+
+def test_model_connectivity():
+    """Verify the local model on spark-dgx is reachable."""
+    client = LocalLLMClient()
+    response = client.invoke([
+        {"role": "user", "content": "Say 'hello' in one word."}
+    ])
+    assert len(response.strip()) > 0
+
+
+def test_code_generation_quality():
+    """Verify the model can generate valid Python."""
+    client = LocalLLMClient(temperature=0.1)
+    response = client.invoke([
+        {"role": "user", "content": "Write a Python function that computes Fibonacci numbers iteratively."}
+    ])
+    assert "def" in response
+    assert "return" in response
+
+
+def test_planner_response_structure():
+    """Verify planner produces structured output."""
+    client = LocalLLMClient(temperature=0.4)
+    response = client.invoke([
+        {"role": "user", "content": "Build a REST API for a todo list with SQLite."}
+    ])
+    assert "plan" in response.lower() or "architecture" in response.lower()
+```
+
+### 7.2 End-to-End Workflow Test
+
+```python
+# tests/test_workflow.py
 from src.workflow.graph import app_graph
 from src.workflow.state import AppWorkflowState
 
-def main():
-    app_description = input("Enter your application description: ")
-    
-    initial_state = {
-        "messages": [{"role": "user", "content": app_description}],
-        "app_description": app_description,
-        "status": "planning"
+
+def test_full_workflow():
+    """Run the complete agentic pipeline with a simple task."""
+    initial_state: AppWorkflowState = {
+        "app_description": "Build a Flask REST API that stores and retrieves notes in SQLite.",
+        "messages": [],
+        "status": "planning",
     }
-    
+
     result = app_graph.invoke(initial_state)
-    
-    # Output final summary
-    print(json.dumps({
-        "plan": result.get("implementation_plan"),
-        "tasks": result.get("tasks"),
-        "files_written": result.get("code_files_written"),
-        "tests_passed": result.get("tests_passed"),
-        "vulnerabilities": result.get("vulnerabilities_found"),
-        "status": result.get("status")
-    }, indent=2))
 
-if __name__ == "__main__":
-    main()
+    assert result["implementation_plan"]
+    assert result["tasks"]
+    assert result["generated_code"]
+    assert result["code_files_written"]
+    assert result.get("tests_passed", False) is True
 ```
 
 ---
 
-## Phase 8: Implementation Checklist
+## Phase 8: Implementation Roadmap
 
-| # | Task | Priority | Files |
-|---|------|----------|-------|
-| 1 | Create agent definitions (coder, tester, security) | High | `agents/coder/AGENTS.md`, `agents/tester/AGENTS.md`, `agents/security/AGENTS.md` |
-| 2 | Define LangGraph state schema | High | `src/workflow/state.py` |
-| 3 | Implement LLM client abstraction | High | `src/agents/llm_client.py` |
-| 4 | Build planner & tasker node implementations | High | `src/workflow/nodes.py` (partial) |
-| 5 | Create Coder agent + node | High | `src/workflow/nodes.py` (coder) |
-| 6 | Create Tester agent + node | High | `src/workflow/nodes.py` (tester) |
-| 7 | Implement Trivy scanner tool | Medium | `src/tools/trivy_scanner.py` |
-| 8 | Create Dockerfile + docker-compose.yml | Medium | `Dockerfile`, `docker-compose.yml` |
-| 9 | Build Security agent + node | Medium | `src/workflow/nodes.py` (security) |
-| 10 | Wire up LangGraph graph with edges | High | `src/workflow/graph.py` |
-| 11 | Create CLI entry point | Medium | `src/main.py` |
-| 12 | Write workflow integration tests | Low | `tests/test_workflow.py` |
-| 13 | Add README with usage examples | Low | `README.md` |
+### Sprint 1 — Infrastructure (Week 1)
+- [ ] Provision spark-dgx environment (CUDA, Docker, NVIDIA Container Toolkit)
+- [ ] Download and quantize Qwen 2.5 Coder 32B model
+- [ ] Deploy vLLM inference server with tensor parallelism
+- [ ] Validate OpenAI-compatible endpoint at `http://spark-dgx:8000/v1`
 
----
+### Sprint 2 — LangChain Integration (Week 2)
+- [ ] Implement `LocalLLMClient` wrapper in `src/agents/llm_client.py`
+- [ ] Create model factory functions for each agent role
+- [ ] Write health-check and quality tests (`tests/test_local_llm.py`)
+- [ ] Integrate with existing LangGraph state machine
 
-## Dependencies to Add
+### Sprint 3 — Agent Nodes (Week 3)
+- [ ] Implement `run_planner` node with local LLM
+- [ ] Implement `run_tasker` node with local LLM
+- [ ] Implement `run_coder` node with local LLM + file write tool
+- [ ] Implement `run_tester` node with local LLM + pytest runner
 
-```txt
-# Add to requirements.txt
-docker-compose>=1.29.0
-trivy-api>=0.1.0    # Optional: Python SDK for Trivy
-pytest-docker>=1.0.0  # For testing Docker-based workflow
-```
+### Sprint 4 — Security & Polish (Week 4)
+- [ ] Implement `run_security_scanner` node (Trivy)
+- [ ] Add conditional retry logic (coder ↔ tester loop)
+- [ ] Build Docker Compose for full pipeline
+- [ ] Write end-to-end integration tests
+- [ ] Document setup and usage in README.md
 
 ---
 
-## Key Design Decisions
+## Risk Assessment & Mitigations
 
-1. **LangGraph over LangChain chains** — Graph enables conditional loops (test → fix → retest cycle)
-2. **Stateful nodes** — Each agent reads/writes a shared TypedDict state for full context visibility
-3. **LLM abstraction layer** — `llm_client.py` supports swapping OpenAI ↔ other providers
-4. **Trivy as Docker service** — Decouples security scanning; can run independently or inline
-5. **Conditional edges** — Test failures loop back to coder; no manual intervention needed
-6. **Agent configs as markdown** — `AGENTS.md` files serve as prompt templates (human-readable + machine-parseable)
+| Risk | Impact | Likelihood | Mitigation |
+|------|--------|-----------|------------|
+| Local model produces lower-quality code than GPT-4 | Medium | Medium | Use 32B+ models; add iterative refinement loops; fallback to cloud API for critical tasks |
+| vLLM server crashes under load | High | Low | Run health checks between nodes; implement retry with exponential backoff |
+| GPU memory exhaustion with large context | High | Medium | Set `max_model_len` conservatively; use quantized models; chunk long prompts |
+| spark-dgx network latency from client | Medium | Low | Run workflow runner on the same DGX host or in the same cluster |
+| Model license restrictions for commercial use | Medium | Low | Use Apache 2.0 licensed models (Qwen, DeepSeek Coder) |
 
 ---
 
-## Risk Mitigations
+## Summary
 
-| Risk | Mitigation |
-|------|-----------|
-| LLM generates broken code | Tester node loops back to coder with error details |
-| Trivy false positives | Report all findings; flag only CRITICAL/HIGH as blocking |
-| Large app descriptions overwhelm context | Planner splits into phased plans; tasker batches by priority |
-| Docker not available in environment | Trivy can scan files directly (`trivy fs`) as fallback |
-| Cost of multiple LLM calls | Cache planner/tasker outputs; batch agent calls where possible |
+This plan adapts the existing LangGraph multi-agent workflow to run entirely on a **local model hosted on spark-dgx**. The key changes from `PLAN.md` are:
+
+1. **Replace cloud LLM calls** with `LocalLLMClient` pointing to a vLLM server on spark-dgx
+2. **Select appropriate models** (Qwen 2.5 Coder 32B recommended) that fit the DGX GPU memory
+3. **Deploy an inference server** (vLLM recommended) with tensor parallelism across DGX GPUs
+4. **Add infrastructure setup steps** for Docker + NVIDIA Container Toolkit on spark-dgx
+5. **Include performance tuning** (quantization, tensor parallelism, throughput knobs)
+
+All LangGraph state machine logic, agent definitions, and workflow structure from `PLAN.md` remain unchanged — only the LLM backend is swapped from cloud to local.
