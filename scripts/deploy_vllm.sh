@@ -25,6 +25,28 @@ if ! docker info &>/dev/null; then
 fi
 echo "    Docker version: $(docker --version)"
 
+# ── 1b. Set up Python virtual environment ────────────────────────────────────
+VENV_DIR="$(pwd)/.venv"
+
+if [[ ! -d "${VENV_DIR}" ]]; then
+    echo ""
+    echo "==> Creating Python virtual environment in ${VENV_DIR} ..."
+    python3 -m venv "${VENV_DIR}"
+fi
+
+echo "==> Activating virtual environment ..."
+# shellcheck disable=SC1091
+source "${VENV_DIR}/bin/activate"
+echo "    Python: $(python --version)"
+echo "    Pip:    $(pip --version)"
+
+# Install huggingface_hub inside the venv if not already present
+if ! python -c "import huggingface_hub" &>/dev/null; then
+    echo ""
+    echo "==> Installing huggingface_hub in virtual environment ..."
+    pip install --quiet huggingface_hub
+fi
+
 # ── Check if vLLM is already deployed ────────────────────────────────────────
 if docker ps --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
     echo "==> vLLM container '${CONTAINER_NAME}' is already running."
@@ -80,10 +102,9 @@ echo "==> Downloading model '${HF_MODEL}' to ${MODELS_DIR} ..."
 
 mkdir -p "${MODELS_DIR}"
 
-if command -v huggingface-cli &>/dev/null; then
-    # Use huggingface-cli directly (preferred, shows progress)
-    huggingface-cli download \
-        --resume-download \
+if command -v hf &>/dev/null; then
+    # Use `hf` CLI (preferred, shows progress)
+    hf download \
         "${HF_MODEL}" \
         --local-dir "${MODELS_DIR}"
 else
@@ -123,7 +144,7 @@ docker run -d \
     -v "${MODELS_DIR}:/app/models" \
     -e HF_HUB_DISABLE_PROGRESS_BARS=1 \
     --env-file <(env | grep -i 'hf_\|huggingface' || true) \
-    --shm-size=auto \
+    --shm-size=8g \
     "${VLLM_IMAGE}" \
     serve \
         /app/models \
