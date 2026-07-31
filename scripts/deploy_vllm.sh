@@ -167,6 +167,12 @@ echo "==> Starting vLLM container '${CONTAINER_NAME}' ..."
 echo "    Model : ${HF_MODEL}"
 echo "    Port  : ${DEFAULT_PORT}"
 echo "    Models: ${MODELS_DIR} -> /app/models"
+
+# Detect number of available GPUs for tensor parallelism
+GPU_COUNT=$(nvidia-smi --query-gpu=count --format=csv,noheader,nounits | head -1)
+GPU_COUNT=${GPU_COUNT:-1}  # Default to 1 if detection fails
+
+echo "    GPU count: ${GPU_COUNT}"
 echo ""
 
 docker run -d \
@@ -182,7 +188,7 @@ docker run -d \
         /app/models \
         --host 0.0.0.0 \
         --port "${DEFAULT_PORT}" \
-        --tensor-parallel-size auto
+        --tensor-parallel-size "${GPU_COUNT}"
 
 echo ""
 echo "==> vLLM container '${CONTAINER_NAME}' is starting up ..."
