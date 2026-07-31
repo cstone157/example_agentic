@@ -47,12 +47,44 @@ if ! python -c "import huggingface_hub" &>/dev/null; then
     pip install --quiet huggingface_hub
 fi
 
-# ── Check if vLLM is already deployed ────────────────────────────────────────
-if docker ps --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
-    echo "==> vLLM container '${CONTAINER_NAME}' is already running."
-    echo "    To stop it:  docker stop ${CONTAINER_NAME}"
-    echo "    To restart:  docker restart ${CONTAINER_NAME}"
-    exit 0
+# ── Check if vLLM container already exists ───────────────────────────────────
+if docker ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
+    # Container exists — check its status
+    CONTAINER_STATUS=$(docker inspect -f '{{.State.Status}}' "${CONTAINER_NAME}" 2>/dev/null)
+
+    case "${CONTAINER_STATUS}" in
+        running)
+            echo "==> vLLM container '${CONTAINER_NAME}' is already running."
+            read -r -p "    Do you want to restart it? [y/N] " RESTART_CHOICE
+            if [[ "${RESTART_CHOICE}" =~ ^[Yy]$ ]]; then
+                echo "    Stopping existing container..."
+                docker stop "${CONTAINER_NAME}"
+                echo "    Container stopped. Proceeding with fresh deployment..."
+            else
+                echo "    Skipping deployment. Container is running."
+                exit 0
+            fi
+            ;;
+        exited|created|paused|restarting|removing|dead)
+            echo "==> vLLM container '${CONTAINER_NAME}' exists but is ${CONTAINER_STATUS}."
+            read -r -p "    Start the existing container? [Y/n] " START_CHOICE
+            if [[ "${START_CHOICE}" =~ ^[Nn]$ ]]; then
+                echo "    Removing old container and proceeding with fresh deployment..."
+                docker rm "${CONTAINER_NAME}"
+            else
+                echo "    Starting container '${CONTAINER_NAME}'..."
+                docker start "${CONTAINER_NAME}"
+                echo ""
+                echo "==> vLLM container is starting up."
+                echo ""
+                echo "    Check status:  docker ps | grep ${CONTAINER_NAME}"
+                echo "    View logs:     docker logs -f ${CONTAINER_NAME}"
+                echo "    Stop it:       docker stop ${CONTAINER_NAME}"
+                echo ""
+                exit 0
+            fi
+            ;;
+    esac
 fi
 
 # ── 2. Ask which model the user wants to use ─────────────────────────────────
