@@ -134,6 +134,19 @@ echo "==> Downloading model '${HF_MODEL}' to ${MODELS_DIR} ..."
 
 mkdir -p "${MODELS_DIR}"
 
+# Check for Hugging Face token (required for gated models like Llama)
+if [ -z "${HF_TOKEN:-}" ] && echo "${HF_MODEL}" | grep -qiE "meta-llama|llama"; then
+    echo ""
+    echo "WARNING: Model '${HF_MODEL}' requires a Hugging Face token."
+    echo "Please set it before running this script:"
+    echo "  export HF_TOKEN='your-hf-token-here'"
+    echo ""
+    read -r -p "    Or continue without token? [y/N] " TOKEN_CHOICE
+    if [[ ! "${TOKEN_CHOICE}" =~ ^[Yy]$ ]]; then
+        exit 1
+    fi
+fi
+
 if command -v hf &>/dev/null; then
     # Use `hf` CLI (preferred, shows progress)
     hf download \
@@ -157,6 +170,40 @@ fi
 
 echo "    Model downloaded to ${MODELS_DIR}"
 
+# ── Validate model directory has files ────────────────────────────────────────
+if [ ! -d "${MODELS_DIR}" ] || [ -z "$(ls -A "${MODELS_DIR}" 2>/dev/null)" ]; then
+    echo ""
+    echo "ERROR: Model directory '${MODELS_DIR}' is empty."
+    echo "Make sure you have a Hugging Face token set:"
+    echo "  export HF_TOKEN='your-hf-token-here'"
+    echo "Then re-run this script."
+    exit 1
+fi
+
+echo "    Model files found in ${MODELS_DIR}"
+
+# ── Validate model format (vLLM requires Hugging Face format with config.json) ──
+if [ ! -f "${MODELS_DIR}/config.json" ]; then
+    echo ""
+    echo "ERROR: Model directory does not contain 'config.json'."
+    echo "vLLM requires models in Hugging Face format, not NVIDIA Megatron format."
+    echo ""
+    echo "Options to fix:"
+    echo ""
+    echo "  1. Download a Hugging Face-compatible model instead:"
+    echo "     - meta-llama/Llama-3.3-70B-Instruct"
+    echo "     - mistralai/Mistral-Large-Instruct-2407"
+    echo "     - Qwen/Qwen2.5-72B-Instruct"
+    echo ""
+    echo "  2. Convert your Megatron model to HF format:"
+    echo "     pip install transformers"
+    echo "     python convert_megatron_to_hf.py --input-dir ${MODELS_DIR} --output-dir ${MODELS_DIR}/hf"
+    echo ""
+    exit 1
+fi
+
+echo "    Model format validated (config.json found)"
+
 # ── 4. Deploy vLLM in Docker ────────────────────────────────────────────────
 echo ""
 echo "==> Pulling vLLM image '${VLLM_IMAGE}' ..."
@@ -173,6 +220,39 @@ GPU_COUNT=$(nvidia-smi --query-gpu=count --format=csv,noheader,nounits | head -1
 GPU_COUNT=${GPU_COUNT:-1}  # Default to 1 if detection fails
 
 echo "    GPU count: ${GPU_COUNT}"
+
+# Check GPU memory usage and calculate safe utilization target
+echo ""
+echo "==> Checking GPU memory availability..."
+FREE_MEM=$(nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits | head -1)
+TOTAL_MEM=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits | head -1)
+USED_MEM=$((TOTAL_MEM - FREE_MEM))
+
+echo "    Total GPU memory: ${TOTAL_MEM} MiB"
+echo "    Free GPU memory:  ${FREE_MEM} MiB"
+echo "    Used by other processes: ${USED_MEM} MiB"
+
+# Calculate safe utilization target (reduce if other processes are using memory)
+if [ "${USED_MEM}" -gt 1024 ]; then
+    # Other processes using > 1GB, reduce vLLM memory target to 80%
+    GPU_MEM_UTIL=0.80
+    echo "    WARNING: Other processes using ${USED_MEM} MiB of GPU memory."
+    echo "    Reducing vLLM GPU memory utilization to 80% (default is 92%)."
+else
+    GPU_MEM_UTIL=0.92
+    echo "    No significant GPU memory usage by other processes."
+fi
+
+# Show any processes using the GPU
+GPU_PROCS=$(nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,noheader 2>/dev/null)
+if [ -n "${GPU_PROCS}" ]; then
+    echo ""
+    echo "    Processes currently using GPU:"
+    echo "${GPU_PROCS}" | while read -r line; do
+        echo "      ${line}"
+    done
+fi
+echo ""
 echo ""
 
 docker run -d \
@@ -183,12 +263,8 @@ docker run -d \
     -e HF_HUB_DISABLE_PROGRESS_BARS=1 \
     --env-file <(env | grep -i 'hf_\|huggingface' || true) \
     --shm-size=8g \
-    "${VLLM_IMAGE}" \
-    serve \
-        /app/models \
-        --host 0.0.0.0 \
-        --port "${DEFAULT_PORT}" \
-        --tensor-parallel-size "${GPU_COUNT}"
+    --entrypoint "" \
+    "${VLLM_IMAGE}" /bin/bash -c "vllm serve /app/models --host 0.0.0.0 --port ${DEFAULT_PORT} --tensor-parallel-size ${GPU_COUNT} --gpu-memory-utilization ${GPU_MEM_UTIL}"
 
 echo ""
 echo "==> vLLM container '${CONTAINER_NAME}' is starting up ..."
