@@ -7,7 +7,14 @@ and MODEL_NAME below to match your deployment.
 """
 
 import os
+from pathlib import Path
+
+from dotenv import load_dotenv
 from openai import OpenAI
+
+# Load environment variables from .env file (if present)
+_env_path = Path(__file__).resolve().parent / ".env"
+load_dotenv(dotenv_path=_env_path, override=True)
 
 # ── Configuration ───────────────────────────────────────────────
 # Base URL of the local model serving endpoint
@@ -58,7 +65,9 @@ def chat(prompt: str, system_prompt: str | None = None, **kwargs) -> str:
         messages=messages,
         **kwargs,
     )
-    return response.choices[0].message.content
+    choice = response.choices[0].message
+    # Reasoning models (e.g., Qwen 3.6) may put output in 'reasoning' instead of 'content'
+    return choice.reasoning if choice.reasoning else choice.content
 
 
 def stream_chat(prompt: str, system_prompt: str | None = None, **kwargs):
