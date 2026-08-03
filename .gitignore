@@ -5,3 +5,5 @@ temp/
 .agentic_workspace/
 models/
 .env
+
+tmp/
