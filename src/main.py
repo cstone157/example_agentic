@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import TypedDict
 
 from dotenv import load_dotenv
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, StateGraph
 
@@ -122,11 +122,17 @@ def generate_plan(
 ) -> None:
     """Generate a development plan from the user's application description.
 
+    Interactively asks the user if they want to revise the plan after each
+    generation. Revisions are submitted back to the LLM which updates the
+    plan accordingly. The loop continues until the user enters 'exit' or
+    'continue'.
+
     Args:
         user_description: The application description provided by the user.
         temperature: Sampling temperature for the LLM (lower for more deterministic plans).
         max_tokens: Maximum tokens in the response.
     """
+    # Build the initial plan
     initial_state: PlannerState = {
         "user_description": user_description,
         "plan": "",
@@ -136,21 +142,62 @@ def generate_plan(
 
     result = graph.invoke(initial_state)
     plan_text = result["plan"]
+    llm = ChatOpenAI(
+        model=MODEL_NAME,
+        base_url=BASE_URL,
+        api_key=API_KEY,
+        temperature=temperature,
+        max_tokens=max_tokens,
+    )
 
-    # Display the plan
-    print("=" * 60)
-    print("GENERATED DEVELOPMENT PLAN")
-    print("=" * 60)
-    print(plan_text)
-    print("=" * 60)
+    # Conversation history for revision turns
+    conversation_history: list = [
+        SystemMessage(content=PLANNER_SYSTEM_PROMPT),
+        HumanMessage(
+            content=f"Describe the application I want built:\n\n{user_description}"
+        ),
+        AIMessage(content=plan_text),
+    ]
 
-    # Save to tmp/PLAN.md
-    tmp_dir = Path(__file__).resolve().parent.parent / "tmp"
-    tmp_dir.mkdir(exist_ok=True)
-    plan_path = tmp_dir / "PLAN.md"
-    with open(plan_path, "w", encoding="utf-8") as f:
-        f.write(plan_text)
-    print(f"\nPlan saved to {plan_path}")
+    while True:
+        # Display the current plan
+        print("=" * 60)
+        print("GENERATED DEVELOPMENT PLAN")
+        print("=" * 60)
+        print(plan_text)
+        print("=" * 60)
+
+        # Save to tmp/PLAN.md
+        tmp_dir = Path(__file__).resolve().parent.parent / "tmp"
+        tmp_dir.mkdir(exist_ok=True)
+        plan_path = tmp_dir / "PLAN.md"
+        with open(plan_path, "w", encoding="utf-8") as f:
+            f.write(plan_text)
+        print(f"\nPlan saved to {plan_path}")
+
+        # Ask the user if they want to revise
+        print()
+        revision = input("Would you like to revise the plan? (yes/no/exit/continue): ").strip().lower()
+
+        if revision in ("exit", "no"):
+            print("\nDone. Final plan saved.")
+            break
+
+        if revision == "continue":
+            print("\nProceeding with the current plan.")
+            break
+
+        # If 'yes' or anything else, treat as a revision request
+        revision_text = input("Enter your revisions:\n> ").strip()
+        if not revision_text:
+            print("No revisions provided. Keeping the current plan.")
+            continue
+
+        # Submit revisions to the LLM
+        conversation_history.append(HumanMessage(content=f"Please revise the plan based on the following feedback:\n\n{revision_text}"))
+        response = llm.invoke(conversation_history)
+        plan_text = response.content
+        conversation_history.append(AIMessage(content=plan_text))
 
 
 if __name__ == "__main__":
