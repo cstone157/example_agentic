@@ -16,6 +16,8 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, StateGraph
 
+from utils import print_and_save_md
+
 # ---------------------------------------------------------------------------
 # Load environment variables from .env file (if present)
 # ---------------------------------------------------------------------------
@@ -161,19 +163,7 @@ def generate_plan(
 
     while True:
         # Display the current plan
-        print("=" * 60)
-        print("GENERATED DEVELOPMENT PLAN")
-        print("=" * 60)
-        print(plan_text)
-        print("=" * 60)
-
-        # Save to tmp/PLAN.md
-        tmp_dir = Path(__file__).resolve().parent.parent / "tmp"
-        tmp_dir.mkdir(exist_ok=True)
-        plan_path = tmp_dir / "PLAN.md"
-        with open(plan_path, "w", encoding="utf-8") as f:
-            f.write(plan_text)
-        print(f"\nPlan saved to {plan_path}")
+        print_and_save_md(plan_text, "plan", "PLAN.md")
 
         # Ask the user if they want to revise
         print()
@@ -200,6 +190,21 @@ def generate_plan(
         conversation_history.append(AIMessage(content=plan_text))
 
 
+def load_existing_plan() -> str | None:
+    """Load an existing plan from tmp/PLAN.md if it exists.
+
+    Returns:
+        The plan text if the file exists, otherwise None.
+    """
+    tmp_dir = Path(__file__).resolve().parent.parent / "tmp"
+    plan_path = tmp_dir / "PLAN.md"
+    print(plan_path)
+    if plan_path.exists():
+        with open(plan_path, "r", encoding="utf-8") as f:
+            return f.read()
+    return None
+
+
 if __name__ == "__main__":
     # If a description is provided as a CLI argument, use it directly.
     # Otherwise, prompt the user interactively.
@@ -215,4 +220,65 @@ if __name__ == "__main__":
         print("Error: No application description provided.")
         sys.exit(1)
 
-    generate_plan(user_description=description)
+    # Check for an existing plan
+    existing_plan = load_existing_plan()
+    if existing_plan:
+        print()
+        print("=" * 60)
+        print("EXISTING PLAN FOUND")
+        print("=" * 60)
+        response = input("Would you like to continue from the existing plan? (yes/no): ").strip().lower()
+        if response in ("yes", "y"):
+            print("\nContinuing from existing plan...")
+            # Use the existing plan text with the new description context
+            initial_state: PlannerState = {
+                "user_description": description,
+                "plan": existing_plan,
+                "temperature": 0.3,
+                "max_tokens": 4096,
+            }
+            # Continue from existing plan by invoking revision loop
+            llm = ChatOpenAI(
+                model=MODEL_NAME,
+                base_url=BASE_URL,
+                api_key=API_KEY,
+                temperature=0.3,
+                max_tokens=4096,
+            )
+            conversation_history: list = [
+                SystemMessage(content=PLANNER_SYSTEM_PROMPT),
+                HumanMessage(
+                    content=f"Describe the application I want built:\n\n{description}"
+                ),
+                AIMessage(content=existing_plan),
+            ]
+            plan_text = existing_plan
+            # Enter revision loop
+            while True:
+                print_and_save_md(plan_text, "plan", "PLAN.md")
+
+                print()
+                revision = input("Would you like to revise the plan? (yes/no/exit/continue): ").strip().lower()
+
+                if revision in ("exit", "no"):
+                    print("\nDone. Final plan saved.")
+                    break
+
+                if revision == "continue":
+                    print("\nProceeding with the current plan.")
+                    break
+
+                revision_text = input("Enter your revisions:\n> ").strip()
+                if not revision_text:
+                    print("No revisions provided. Keeping the current plan.")
+                    continue
+
+                conversation_history.append(HumanMessage(content=f"Please revise the plan based on the following feedback:\n\n{revision_text}"))
+                response = llm.invoke(conversation_history)
+                plan_text = response.content
+                conversation_history.append(AIMessage(content=plan_text))
+        else:
+            print("\nGenerating a new plan...")
+            generate_plan(user_description=description)
+    else:
+        generate_plan(user_description=description)
