@@ -1,22 +1,12 @@
-"""LangGraph application planner powered by a local LLM on a Spark DGX.
-
-The workflow:
-  1. Prompt the user to describe the application they want built.
-  2. Send the description to the LLM using the Planning Agent instructions.
-  3. Display the generated plan and save it to tmp/PLAN.md.
-"""
-
 import os
-import sys
+from dotenv import load_dotenv
+
 from pathlib import Path
 from typing import TypedDict
-
-from dotenv import load_dotenv
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
-from langgraph.graph import END, StateGraph
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
-from utils import print_and_save_md
+from coder.utils import print_and_save_md, load_file
 
 # ---------------------------------------------------------------------------
 # Load environment variables from .env file (if present)
@@ -45,11 +35,10 @@ else:
         "task list, dependencies, and configuration."
     )
 
+
 # ---------------------------------------------------------------------------
 # LangGraph state definition
 # ---------------------------------------------------------------------------
-
-
 class PlannerState(TypedDict):
     """The state carried through the planning graph.
 
@@ -69,14 +58,15 @@ class PlannerState(TypedDict):
 # ---------------------------------------------------------------------------
 # Planning node
 # ---------------------------------------------------------------------------
-
-
 def plan_node(state: PlannerState) -> PlannerState:
     """Call the LLM with the planning agent prompt and return the generated plan.
 
     Args:
         state: Current graph state containing the user's description,
-            temperature, and max_tokens.
+                temperature, and max_tokens.
+        MODEL_NAME: The name of the LLM model to use.
+        BASE_URL: The base URL for the LLM API.
+        API_KEY: The API key for the LLM API.
 
     Returns:
         Updated state with the generated plan stored in 'plan'.
@@ -101,24 +91,14 @@ def plan_node(state: PlannerState) -> PlannerState:
     response = llm.invoke(messages)
     return {"plan": response.content}
 
-
-# ---------------------------------------------------------------------------
-# Graph construction
-# ---------------------------------------------------------------------------
-
-workflow = StateGraph(PlannerState)
-workflow.add_node("plan", plan_node)
-workflow.set_entry_point("plan")
-workflow.add_edge("plan", END)
-graph = workflow.compile()
-
-
 # ---------------------------------------------------------------------------
 # CLI entry point
 # ---------------------------------------------------------------------------
 
 def generate_plan(
     user_description: str,
+    graph,
+    existing_plan: str | None = None,
     temperature: float = 0.3,
     max_tokens: int = 4096,
 ) -> None:
@@ -131,13 +111,14 @@ def generate_plan(
 
     Args:
         user_description: The application description provided by the user.
+        existing_plan: An existing plan to build upon.
         temperature: Sampling temperature for the LLM (lower for more deterministic plans).
         max_tokens: Maximum tokens in the response.
     """
     # Build the initial plan
     initial_state: PlannerState = {
         "user_description": user_description,
-        "plan": "",
+        "plan": existing_plan or "",
         "temperature": temperature,
         "max_tokens": max_tokens,
     }
@@ -188,97 +169,3 @@ def generate_plan(
         response = llm.invoke(conversation_history)
         plan_text = response.content
         conversation_history.append(AIMessage(content=plan_text))
-
-
-def load_existing_plan() -> str | None:
-    """Load an existing plan from tmp/PLAN.md if it exists.
-
-    Returns:
-        The plan text if the file exists, otherwise None.
-    """
-    tmp_dir = Path(__file__).resolve().parent.parent / "tmp"
-    plan_path = tmp_dir / "PLAN.md"
-    print(plan_path)
-    if plan_path.exists():
-        with open(plan_path, "r", encoding="utf-8") as f:
-            return f.read()
-    return None
-
-
-if __name__ == "__main__":
-    # If a description is provided as a CLI argument, use it directly.
-    # Otherwise, prompt the user interactively.
-    if len(sys.argv) > 1:
-        description = " ".join(sys.argv[1:])
-    else:
-        print("Describe the application you want built:")
-        print("(Type your description and press Enter.)")
-        print()
-        description = input("> ").strip()
-
-    if not description:
-        print("Error: No application description provided.")
-        sys.exit(1)
-
-    # Check for an existing plan
-    existing_plan = load_existing_plan()
-    if existing_plan:
-        print()
-        print("=" * 60)
-        print("EXISTING PLAN FOUND")
-        print("=" * 60)
-        response = input("Would you like to continue from the existing plan? (yes/no): ").strip().lower()
-        if response in ("yes", "y"):
-            print("\nContinuing from existing plan...")
-            # Use the existing plan text with the new description context
-            initial_state: PlannerState = {
-                "user_description": description,
-                "plan": existing_plan,
-                "temperature": 0.3,
-                "max_tokens": 4096,
-            }
-            # Continue from existing plan by invoking revision loop
-            llm = ChatOpenAI(
-                model=MODEL_NAME,
-                base_url=BASE_URL,
-                api_key=API_KEY,
-                temperature=0.3,
-                max_tokens=4096,
-            )
-            conversation_history: list = [
-                SystemMessage(content=PLANNER_SYSTEM_PROMPT),
-                HumanMessage(
-                    content=f"Describe the application I want built:\n\n{description}"
-                ),
-                AIMessage(content=existing_plan),
-            ]
-            plan_text = existing_plan
-            # Enter revision loop
-            while True:
-                print_and_save_md(plan_text, "plan", "PLAN.md")
-
-                print()
-                revision = input("Would you like to revise the plan? (yes/no/exit/continue): ").strip().lower()
-
-                if revision in ("exit", "no"):
-                    print("\nDone. Final plan saved.")
-                    break
-
-                if revision == "continue":
-                    print("\nProceeding with the current plan.")
-                    break
-
-                revision_text = input("Enter your revisions:\n> ").strip()
-                if not revision_text:
-                    print("No revisions provided. Keeping the current plan.")
-                    continue
-
-                conversation_history.append(HumanMessage(content=f"Please revise the plan based on the following feedback:\n\n{revision_text}"))
-                response = llm.invoke(conversation_history)
-                plan_text = response.content
-                conversation_history.append(AIMessage(content=plan_text))
-        else:
-            print("\nGenerating a new plan...")
-            generate_plan(user_description=description)
-    else:
-        generate_plan(user_description=description)
