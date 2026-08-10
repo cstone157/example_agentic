@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 # from langchain_google_genai import ChatGoogleGenerativeAI  # Google LLM interface
 
 from crewai_tools import SerperDevTool                    # Web search tool
+from langchain_community.tools import DuckDuckGoSearchRun # Web search tool
 from langchain.tools import tool                          # Decorator to turn functions into tools
 from langchain_openai import ChatOpenAI
 from langgraph.prebuilt import create_react_agent         # Helper to build ReAct-style agents
@@ -48,8 +49,29 @@ def serper_search(user_query: str) -> str:
     Returns:
         str: A formatted string of search results from Serper.
     """
-    return SerperDevTool().run(query=user_query)
+    # return SerperDevTool().run(query=user_query)
+    return SerperDevTool().run(search_query=user_query)
 
+# ---------------------------------------------------------------------------
+# Tool Definition
+# ---------------------------------------------------------------------------
+@tool
+def duck_search(user_query: str) -> str:
+    """
+    Perform a real-time search using the DuckDuckGo API.
+
+    This tool takes a plain-text user query, sends it to DuckDuckGo (a web search API),
+    and returns a string with the top relevant results. It can be used by agents
+    to gather up-to-date information from the internet as part of a reasoning or
+    research task.
+
+    Args:
+        user_query (str): A natural language search prompt.
+
+    Returns:
+        str: A formatted string of search results from DuckDuckGo.
+    """
+    return DuckDuckGoSearchRun().run(tool_input=user_query)
 
 # ---------------------------------------------------------------------------
 # Create the LLM instance using the specified model, base URL, and API key
@@ -86,7 +108,8 @@ def search_agent(state: AgentState) -> str:
     Returns:
         dict: Updated state with the generated answer.
     """
-    agent = create_react_agent(llm, [serper_search])
+    # agent = create_react_agent(llm, [serper_search])
+    agent = create_react_agent(llm, [duck_search])
     result = agent.invoke({"messages": state["user_query"]})
     return {"answer": result["messages"][-1].content}
 
@@ -193,5 +216,6 @@ app = workflow.compile()
 print(app.get_graph().draw_ascii())
 
 # --- Run Graph ---
-result = app.invoke({"user_query": "Who won the IPL 2025 final?"})
+# result = app.invoke({"user_query": "Who won the IPL 2025 final?"})
+result = app.invoke({})
 print(result["answer"])
