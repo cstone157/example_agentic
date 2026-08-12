@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 
 from langgraph.graph import START, StateGraph, END        # Core components of LangGraph
 
-from agents import planner_agent, router_agent
+from agents import planner_agent, router_agent, task_agent, router_logic
 from state import CoderAgentState
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -31,15 +31,18 @@ API_KEY: str = os.getenv("LLM_API_KEY", "ollama")
 workflow = StateGraph(CoderAgentState)
 workflow.add_node("router_agent", router_agent)
 workflow.add_node("planner_agent", planner_agent)
+workflow.add_node("task_agent", task_agent)
 
-workflow.set_entry_point("router_agent")
-workflow.add_edge("router_agent", "planner_agent")
+
+workflow.add_edge(START, "router_agent")
+workflow.add_conditional_edges("router_agent", router_logic)
 workflow.add_edge("planner_agent", END)
+workflow.add_edge("task_agent", END)
 
 app = workflow.compile()
 
-# Log the ASCII representation of the graph for debugging purposes
-logger.info(app.get_graph().draw_ascii())
+# Print the ASCII representation of the graph for debugging purposes
+print(app.get_graph().draw_ascii())
 
 # Run the graph
 result = app.invoke({})
