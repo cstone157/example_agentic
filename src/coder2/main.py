@@ -4,9 +4,10 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from langchain_openai import ChatOpenAI
 from langgraph.graph import START, StateGraph, END        # Core components of LangGraph
 
-from agents import planner_agent, router_agent, task_agent, router_logic
+from agents import _init_agents_, planner_agent, router_agent, task_agent, router_logic
 from state import CoderAgentState
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -24,6 +25,19 @@ load_dotenv(dotenv_path=_env_path, override=True)
 BASE_URL: str = os.getenv("LLM_BASE_URL", "http://localhost:11434/v1")
 MODEL_NAME: str = os.getenv("LLM_MODEL_NAME", "qwen3.6:35b-a3b-bf16")
 API_KEY: str = os.getenv("LLM_API_KEY", "ollama")
+
+# ---------------------------------------------------------------------------
+# Create the LLM instance using the specified model, base URL, and API key
+# ---------------------------------------------------------------------------
+llm = ChatOpenAI(
+    model=MODEL_NAME,
+    base_url=BASE_URL,
+    api_key=API_KEY,
+    temperature=0.3,
+    max_tokens=4096,
+)
+_init_agents_(llm)
+
 
 # ---------------------------------------------------------------------------
 # Define the workflow
