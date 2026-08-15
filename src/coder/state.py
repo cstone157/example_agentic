@@ -6,6 +6,7 @@ from typing import TypedDict                              # Used to define struc
 # tasks to be completed, and a list of completed tasks.
 # ---------------------------------------------------------------------------
 class CoderAgentState(TypedDict):
+    prev_step: str
     user_description: str
     plan: str
     tasks: list[str]
