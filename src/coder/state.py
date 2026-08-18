@@ -9,5 +9,6 @@ class CoderAgentState(TypedDict):
     prev_step: str
     user_description: str
     plan: str
+    plan_conversation: list
     tasks: list[str]
     completed_tasks: list[str]

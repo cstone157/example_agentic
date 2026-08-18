@@ -46,6 +46,26 @@ def _init_agents_(llm, planner_prompt=None):
 # ---------------------------------------------------------------------------
 # The various different Agents that our application will be using
 # ---------------------------------------------------------------------------
+def initial_agent(state: CoderAgentState) -> CoderAgentState:
+    """
+    A initial agent that decides which agent to invoke next based on the user query.
+
+    Args:
+        state (AgentState): The current state containing the user query.
+    Returns:
+        AgentState: Updated state after routing decision.
+    """
+    logger.info("--- Initial Agent invoked ---")
+
+    if "plan" not in state or state["plan"] is None or state["plan"].strip() == "":
+        state['user_description'] = input("Describe the application that you want to build: ")
+        state["prev_step"] = _INITIAL_
+
+    logger.info("Current state: %s", state)
+    logger.info("--- Initial Agent closted ---")
+    return state
+
+
 def planner_agent(state: CoderAgentState) -> CoderAgentState:
     """
     A agent that will use the user description to generate a plan for 
@@ -58,25 +78,25 @@ def planner_agent(state: CoderAgentState) -> CoderAgentState:
     """    
     # Here you would implement the logic to generate a plan based on the user query.
     # For demonstration purposes, we'll just create a dummy plan.
-    logger.info("--- Input Node ---")
-
-    messages = [
-        SystemMessage(content=_PLANNER_SYSTEM_PROMPT_),
-        HumanMessage(
-            content=(
-                f"Describe the application I want built:\n\n{state['user_description']}"
-            )
-        ),
-    ]
-    response = _llm_.invoke(messages)
+    logger.info("--- Plan generation node invoked ---")
+    if "plan_conversation" not in state:
+        state["plan_conversation"] = [
+            SystemMessage(content=_PLANNER_SYSTEM_PROMPT_),
+            HumanMessage(
+                content=(
+                    f"Describe the application I want built:\n\n{state['user_description']}"
+                )
+            ),
+        ]
+    response = _llm_.invoke(state["plan_conversation"])
     
     # Update the state with the generated plan
     state['plan'] = response.content
+    state["plan_conversation"].append(AIMessage(content=response.content))
     state['tasks'] = []  # Initialize tasks list
     state['completed_tasks'] = []  # Initialize completed tasks list
     state["prev_step"] = _PLANNER_
-    
-    logger.info("Generated plan: %s", response.content)
+    logger.info("--- Plan generation node closed ---")
     return state
 
 def task_agent(state: CoderAgentState) -> CoderAgentState:
@@ -102,25 +122,6 @@ def task_agent(state: CoderAgentState) -> CoderAgentState:
     logger.info("Generated tasks: %s", generated_tasks)
     return state
 
-def initial_agent(state: CoderAgentState) -> CoderAgentState:
-    """
-    A initial agent that decides which agent to invoke next based on the user query.
-
-    Args:
-        state (AgentState): The current state containing the user query.
-    Returns:
-        AgentState: Updated state after routing decision.
-    """
-    logger.info("--- Initial Agent invoked ---")
-
-    if "plan" not in state or state["plan"] is None or state["plan"].strip() == "":
-        state['user_description'] = input("Describe the application that you want to build: ")
-        state["prev_step"] = _INITIAL_
-
-    logger.info("Current state: %s", state)
-    logger.info("--- Initial Agent closted ---")
-    return state
-
 
 # ---------------------------------------------------------------------------
 # The various different routing logic that we will be using
@@ -139,6 +140,22 @@ def router_logic(state: CoderAgentState) -> Literal["planner_agent", "task_agent
     if 'plan' not in state or state['user_description'].strip() == "":
         logger.warning("User query is empty. Routing to planner agent.")
         return "planner_agent"
+
+    if state['prev_step'] == _PLANNER_:
+        print("The generated plan is: \n%s\n ===================================== \n", state['plan'])
+        action = input("Are you good with the plan as generated (y/n): ")
+        if action.strip().lower() == 'y':
+            return "task_agent"
+        else:
+            update = input("What changes to you want made to the plan: ")
+            state["plan_conversation"].append(HumanMessage(
+                            content=(
+                                f"Update the plan:\n{update}"
+                            )
+                        ))
+            return "planner_agent"
+
+
 
     
     logger.warning("User query is empty. Routing to task agent.")
