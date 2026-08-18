@@ -59,7 +59,6 @@ def planner_agent(state: CoderAgentState) -> CoderAgentState:
     # Here you would implement the logic to generate a plan based on the user query.
     # For demonstration purposes, we'll just create a dummy plan.
     logger.info("--- Input Node ---")
-    state['user_description'] = input("Describe the application that you want to build: ")
 
     messages = [
         SystemMessage(content=_PLANNER_SYSTEM_PROMPT_),
@@ -75,6 +74,7 @@ def planner_agent(state: CoderAgentState) -> CoderAgentState:
     state['plan'] = response.content
     state['tasks'] = []  # Initialize tasks list
     state['completed_tasks'] = []  # Initialize completed tasks list
+    state["prev_step"] = _PLANNER_
     
     logger.info("Generated plan: %s", response.content)
     return state
@@ -102,7 +102,7 @@ def task_agent(state: CoderAgentState) -> CoderAgentState:
     logger.info("Generated tasks: %s", generated_tasks)
     return state
 
-def initial_agent(state: CoderAgentState) -> Literal["planner_agent", "task_agent"]:
+def initial_agent(state: CoderAgentState) -> CoderAgentState:
     """
     A initial agent that decides which agent to invoke next based on the user query.
 
@@ -118,6 +118,7 @@ def initial_agent(state: CoderAgentState) -> Literal["planner_agent", "task_agen
         state["prev_step"] = _INITIAL_
 
     logger.info("Current state: %s", state)
+    logger.info("--- Initial Agent closted ---")
     return state
 
 
@@ -138,9 +139,7 @@ def router_logic(state: CoderAgentState) -> Literal["planner_agent", "task_agent
     if 'plan' not in state or state['user_description'].strip() == "":
         logger.warning("User query is empty. Routing to planner agent.")
         return "planner_agent"
+
     
     logger.warning("User query is empty. Routing to task agent.")
     return "task_agent"
-
-
-def planner_logic(state: CoderAgentState) -> Literal["planner_agent", "task_agent"]
