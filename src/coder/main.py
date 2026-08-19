@@ -50,13 +50,14 @@ workflow.add_node("task_agent", task_agent)
 
 workflow.add_edge(START, "initial_agent")
 workflow.add_conditional_edges("initial_agent", router_logic)
-workflow.add_edge("planner_agent", END)
+#workflow.add_edge("planner_agent", END)
+workflow.add_conditional_edges("planner_agent", router_logic)
 workflow.add_edge("task_agent", END)
 
 app = workflow.compile()
 
 # Print the ASCII representation of the graph for debugging purposes
-print(app.get_graph().draw_ascii())
+# print(app.get_graph().draw_ascii()) # The draw ascii() crashed when there is a loop back sort of function
 
 # Run the graph
 result = app.invoke({})

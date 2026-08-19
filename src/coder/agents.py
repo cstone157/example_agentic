@@ -136,7 +136,7 @@ def router_logic(state: CoderAgentState) -> Literal["planner_agent", "task_agent
         AgentState: Updated state after routing decision.
     """
     logger.info("--- Router Logic invoked ---")
-    logger.info("Current state: %s", state)
+    # logger.info("Current state: %s", state)
     if 'plan' not in state or state['user_description'].strip() == "":
         logger.warning("User query is empty. Routing to planner agent.")
         return "planner_agent"
@@ -158,5 +158,5 @@ def router_logic(state: CoderAgentState) -> Literal["planner_agent", "task_agent
 
 
     
-    logger.warning("User query is empty. Routing to task agent.")
+    # logger.warning("User query is empty. Routing to task agent.")
     return "task_agent"
