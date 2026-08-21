@@ -25,3 +25,6 @@ class CodingState(TypedDict):
 
     prev_step: str
     """Name/identifier of the most recently executed step in the workflow."""
+
+    output_dir: str
+    """Directory path where generated files (plan, code) should be saved."""

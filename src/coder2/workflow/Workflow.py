@@ -40,8 +40,33 @@ _llm = ChatOpenAI(
 
 def _planner_node(state: CodingState) -> CodingState:
     """Wrapper so planner_agent (which takes state + llm) fits LangGraph's
-    single-argument node signature."""
-    return planner_agent(state, _llm)
+    single-argument node signature.
+
+    After the user accepts the plan, prompts for an output directory and writes
+    the plan file there.
+    """
+    state = planner_agent(state, _llm)
+
+    # --- Plan accepted: ask where to save it --------------------------------
+    default_dir = Path(__file__).resolve().parent.parent / "output"
+    output_dir = input(
+        f"\nEnter directory to save the plan (default: {default_dir}): "
+    ).strip()
+
+    if not output_dir:
+        output_dir = str(default_dir)
+
+    state["output_dir"] = output_dir
+
+    # Write the accepted plan to disk
+    plan_path = Path(output_dir) / "plan.md"
+    plan_path.parent.mkdir(parents=True, exist_ok=True)
+    plan_path.write_text(state["plan"], encoding="utf-8")
+
+    logger.info("Plan saved to %s", plan_path)
+    print(f"\nPlan written to: {plan_path}")
+
+    return state
 
 
 def create_workflow() -> StateGraph:
