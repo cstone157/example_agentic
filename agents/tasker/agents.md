@@ -43,12 +43,14 @@ Generated from plan: "[plan title or summary]"
 - **Description:** Clear, concise description of what to implement.
 - **Dependencies:** T-[ID], T-[ID] (or "None")
 - **Acceptance Criteria:**
-  - [ ] Criterion 1
-  - [ ] Criterion 2
+  - [ ] AC-[NN]: Criterion 1
+  - [ ] AC-[NN]: Criterion 2
 
 ### T-[ID]: [Task Title]
 ...
 ```
+
+Each acceptance criterion gets an `AC-[NN]` identifier (e.g., `AC-01`, `AC-02`) for individual tracking. The full task ID format is `T-[MODULE]-[NN]` (e.g., `T-AUTH-01`). Every task and every acceptance criterion must have a unique, referenceable identifier.
 
 ## Guidelines
 
@@ -70,8 +72,8 @@ Given a plan for a "URL Shortener" app, produce:
 - **Description:** Create pyproject.toml with project metadata, dependencies (fastapi, uvicorn, sqlmodel), and pre-commit hooks.
 - **Dependencies:** None
 - **Acceptance Criteria:**
-  - [ ] pyproject.toml exists with correct metadata and dependencies
-  - [ ] `pip install -e .` succeeds without errors
+  - [ ] AC-01: pyproject.toml exists with correct metadata and dependencies
+  - [ ] AC-02: `pip install -e .` succeeds without errors
 
 ### T-DB-01: Implement database models
 - **Module:** DB
@@ -79,8 +81,8 @@ Given a plan for a "URL Shortener" app, produce:
 - **Description:** Define SQLModel classes for `ShortURL` (id, original_url, short_code, clicks, created_at).
 - **Dependencies:** T-CONFIG-01
 - **Acceptance Criteria:**
-  - [ ] ShortURL model has all required fields with correct types
-  - [ ] Alembic migration generates successfully
+  - [ ] AC-01: ShortURL model has all required fields with correct types
+  - [ ] AC-02: Alembic migration generates successfully
 
 ...
 ```
