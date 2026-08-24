@@ -32,8 +32,9 @@ def create_workflow() -> StateGraph:
 
     # Define edges
     workflow.add_edge(START, "planner")
-    workflow.add_edge("planner", "tasker")
-    workflow.add_edge("tasker", END)
+    # workflow.add_edge("planner", "tasker")
+    # workflow.add_edge("tasker", END)
+    workflow.add_edge("planner", END)
 
     return workflow
 

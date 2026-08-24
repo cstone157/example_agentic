@@ -12,8 +12,3 @@ app = get_app()
 
 print("Starting coding workflow...\n")
 result = app.invoke({})
-
-print("\n# ========================================================== #")
-print("Final results")
-print("# ========================================================== #")
-# print(result)

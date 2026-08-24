@@ -21,10 +21,13 @@ def _init_planner_(llm):
     global _llm_, _PLANNER_SYSTEM_PROMPT_
 
     _llm_ = llm
-    planner_path = Path(__file__).resolve().parent.parent / "agents" / "planner" / "agents.md"
+    planner_path = Path(__file__).resolve().parent.parent.parent / "agents" / "planner" / "agents.md"
     if planner_path.exists():
         with open(planner_path, encoding="utf-8") as f:
             _PLANNER_SYSTEM_PROMPT_ = f.read()
+    else:
+        # logger.warn(f"{Path(__file__).resolve().parent.parent}")
+        logger.warn(f"Warning: no {planner_path} detected, using the default prompt.")
 
 
 def planner_agent(state: CodingState) -> CodingState:
